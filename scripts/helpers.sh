@@ -366,10 +366,10 @@ create_empty_swap_pane() {
     split_width="$(( current_window_width - current_pane_width - 1 ))"
     split_height="$(( current_window_height - current_pane_height - 1 ))"
 
-    if (( split_width >= 0 )); then
+    if (( split_width > 0 )); then
         tmux split-window -d -t "${swap_pane_id}" -h -l "${split_width}" "cat"
     fi
-    if (( split_height >= 0 )); then
+    if (( split_height > 0 )); then
         tmux split-window -d -t "${swap_pane_id}" -l "${split_height}" "cat"
     fi
 
