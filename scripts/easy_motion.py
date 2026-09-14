@@ -9,6 +9,7 @@ import subprocess
 import sys
 import termios
 import time
+import unicodedata
 
 PY2 = sys.version_info.major < 3  # is needed for correct mypy checking
 
@@ -463,13 +464,36 @@ def parse_arguments():
     )
 
 
+def character_display_width(character):
+    # type: (str) -> int
+    if unicodedata.combining(character) or unicodedata.category(character) in ("Cf", "Me", "Mn"):
+        return 0
+    return 2 if unicodedata.east_asian_width(character) in ("F", "W") else 1
+
+
+def display_col_to_text_col(line, display_col):
+    # type: (str, int) -> int
+    current_display_col = 0
+    for text_col, character in enumerate(line):
+        next_display_col = current_display_col + character_display_width(character)
+        if display_col < next_display_col:
+            return text_col
+        current_display_col = next_display_col
+    return len(line)
+
+
+def text_col_to_display_col(line, text_col):
+    # type: (str, int) -> int
+    return sum(character_display_width(character) for character in line[:text_col])
+
+
 def convert_row_col_to_text_pos(row, col, text):
     # type: (int, int, str) -> int
     lines = text.split("\n")
     # Limit `row` and `col` to the existing text
     row = max(min(row, len(lines) - 1), 0)
     row_line = lines[row]
-    col = max(min(col, len(row_line) - 1), 0)
+    col = display_col_to_text_col(row_line, max(col, 0))
 
     cursor_position = sum(len(line) for line in lines[:row]) + col
     cursor_position += row  # add `row` newline characters
@@ -485,7 +509,8 @@ def convert_text_pos_to_row_col(textpos, text):
     for line in lines:
         line_length = len(line)
         if current_textpos + line_length > textpos:
-            col = textpos - current_textpos
+            text_col = textpos - current_textpos
+            col = text_col_to_display_col(line, text_col)
             break
         row += 1
         current_textpos += line_length + 1

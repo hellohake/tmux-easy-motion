@@ -418,7 +418,8 @@ read_cursor_position() {
 
 set_cursor_position() {
     local pane_id row_col
-    local row col current_row current_col rel_row rel_col
+    local row col current_row current_col previous_col rel_row direction
+    local remaining_moves
 
     pane_id="$1"
     row_col="$2"
@@ -432,13 +433,27 @@ set_cursor_position() {
     elif (( rel_row > 0 )); then
         tmux send-keys -t "${pane_id}" -X -N "$(( rel_row ))" cursor-down
     fi
-    # Reread the cursor position since the colum can change
-    # while moving the cursor up or down (like in vim).
+    # Python reports a terminal-cell column. Move one character at a time and
+    # reread tmux's cell column so wide characters do not turn a cell delta
+    # into an incorrect character repeat count. Recompute the direction after
+    # every move because vertical motion may leave the cursor on the trailing
+    # cell of a wide character.
     IFS=':' read -r current_row current_col <<< "$(read_cursor_position "${pane_id}")"
-    rel_col="$(( col - current_col ))"
-    if (( rel_col < 0 )); then
-        tmux send-keys -t "${pane_id}" -X -N "$(( -rel_col ))" cursor-left
-    elif (( rel_col > 0 )); then
-        tmux send-keys -t "${pane_id}" -X -N "$(( rel_col ))" cursor-right
-    fi
+    remaining_moves="$(( current_col > col ? current_col - col + 2 : col - current_col + 2 ))"
+    while (( current_col != col )); do
+        if (( remaining_moves-- <= 0 )); then
+            return 1
+        fi
+        if (( current_col < col )); then
+            direction="cursor-right"
+        else
+            direction="cursor-left"
+        fi
+        previous_col="${current_col}"
+        tmux send-keys -t "${pane_id}" -X "${direction}" || return
+        IFS=':' read -r current_row current_col <<< "$(read_cursor_position "${pane_id}")"
+        if (( current_row != row || current_col == previous_col )); then
+            return 1
+        fi
+    done
 }
