@@ -417,12 +417,13 @@ read_cursor_position() {
 }
 
 set_cursor_position() {
-    local pane_id row_col
+    local pane_id row_col direct_horizontal_moves
     local row col current_row current_col previous_col rel_row direction
     local remaining_moves
 
     pane_id="$1"
     row_col="$2"
+    direct_horizontal_moves="$3"
 
     IFS=':' read -r row col <<< "${row_col}"
     IFS=':' read -r current_row current_col <<< "$(read_cursor_position "${pane_id}")"
@@ -433,12 +434,32 @@ set_cursor_position() {
     elif (( rel_row > 0 )); then
         tmux send-keys -t "${pane_id}" -X -N "$(( rel_row ))" cursor-down
     fi
-    # Python reports a terminal-cell column. Move one character at a time and
-    # reread tmux's cell column so wide characters do not turn a cell delta
-    # into an incorrect character repeat count. Recompute the direction after
-    # every move because vertical motion may leave the cursor on the trailing
-    # cell of a wide character.
     IFS=':' read -r current_row current_col <<< "$(read_cursor_position "${pane_id}")"
+    # For targets on the same captured row, Python can calculate the number of
+    # terminal characters between the cursor and target. Send that count in one
+    # command so tmux redraws only the final position. Verify the cell column and
+    # fall back to guarded single-character moves if the terminal grid differs.
+    if [[ "${direct_horizontal_moves}" =~ ^[0-9]+$ ]] && (( current_row == row )); then
+        if (( current_col < col )); then
+            direction="cursor-right"
+        elif (( current_col > col )); then
+            direction="cursor-left"
+        elif (( direct_horizontal_moves == 0 )); then
+            return 0
+        fi
+        if [[ -n "${direction}" ]]; then
+            tmux send-keys -t "${pane_id}" -X -N "${direct_horizontal_moves}" "${direction}" || return
+            IFS=':' read -r current_row current_col <<< "$(read_cursor_position "${pane_id}")"
+            if (( current_row == row && current_col == col )); then
+                return 0
+            fi
+            if (( current_row != row )); then
+                return 1
+            fi
+        fi
+    fi
+    # Cross-row and zero-width-character paths cannot be reduced to a stable
+    # repeat count. Recompute after every move so wide cells remain correct.
     remaining_moves="$(( current_col > col ? current_col - col + 2 : col - current_col + 2 ))"
     while (( current_col != col )); do
         if (( remaining_moves-- <= 0 )); then

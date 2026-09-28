@@ -520,6 +520,17 @@ def convert_text_pos_to_row_col(textpos, text):
     return (row, col)
 
 
+def count_direct_horizontal_moves(cursor_position, target_position, text):
+    # type: (int, int, str) -> Optional[int]
+    start, end = sorted((cursor_position, target_position))
+    text_between = text[start:end]
+    if "\n" in text_between:
+        return None
+    if any(character_display_width(character) == 0 for character in text_between):
+        return None
+    return len(text_between)
+
+
 def find_first_line_end(cursor_position, text):
     # type: (int, str) -> int
     first_line_end = re.match(r".*($)", text[cursor_position:], flags=re.MULTILINE)
@@ -733,9 +744,12 @@ def print_single_target(command_pipe):
     command_pipe.flush()
 
 
-def print_jump_target(row, col, command_pipe):
-    # type: (int, int, IO[str]) -> None
-    print("jump {:d}:{:d}".format(row, col), file=command_pipe)
+def print_jump_target(row, col, direct_horizontal_moves, command_pipe):
+    # type: (int, int, Optional[int], IO[str]) -> None
+    jump_command = "jump {:d}:{:d}".format(row, col)
+    if direct_horizontal_moves is not None:
+        jump_command += " {:d}".format(direct_horizontal_moves)
+    print(jump_command, file=command_pipe)
     command_pipe.flush()
 
 
@@ -819,8 +833,16 @@ def handle_user_input(
                     if first_highlight:
                         print_single_target(command_pipe)
                     found_index = grouped_indices
+                    target_row, target_col = convert_text_pos_to_row_col(
+                        found_index, capture_buffer
+                    )
                     print_jump_target(
-                        *convert_text_pos_to_row_col(found_index, capture_buffer), command_pipe=command_pipe
+                        target_row,
+                        target_col,
+                        count_direct_horizontal_moves(
+                            cursor_position, found_index, capture_buffer
+                        ),
+                        command_pipe=command_pipe,
                     )
                     break
                 # Reopen the named pipe each time because the open operation blocks till the sender also reopens

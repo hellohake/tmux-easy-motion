@@ -43,7 +43,13 @@ def display_width(text):
     return width
 
 
-def run_case(sample, target_text, pane_width=80):
+def run_case(
+    sample,
+    target_text,
+    pane_width=80,
+    assert_direct=False,
+    start_at_line_start=False,
+):
     env = os.environ.copy()
     env.pop("TMUX", None)
     env.pop("TMUX_PANE", None)
@@ -71,12 +77,22 @@ def run_case(sample, target_text, pane_width=80):
                     pass
 
         try:
-            fixture = (
-                "import time; "
-                f"print({sample!r}, flush=True); "
-                "print('FOOTER', flush=True); "
-                "time.sleep(30)"
-            )
+            if assert_direct:
+                fixture = (
+                    "import sys, time; "
+                    f"sys.stdout.write({sample!r}); "
+                    "sys.stdout.flush(); "
+                    "time.sleep(30)"
+                )
+                ready_text = sample[-16:]
+            else:
+                fixture = (
+                    "import time; "
+                    f"print({sample!r}, flush=True); "
+                    "print('FOOTER', flush=True); "
+                    "time.sleep(30)"
+                )
+                ready_text = "FOOTER"
             pane = tmux(
                 "-f", "/dev/null", "new-session", "-d", "-x", str(pane_width), "-y", "12",
                 "-s", "test", "-P", "-F", "#{pane_id}",
@@ -94,6 +110,7 @@ def run_case(sample, target_text, pane_width=80):
             binding = (
                 "bind-key w { copy-mode; "
                 f'run-shell -b "{command}" }}\n'
+                f'bind-key -T copy-mode-vi w run-shell -b "{command}"\n'
             )
             subprocess.run(
                 ["tmux", "-S", socket, "source-file", "-"],
@@ -101,7 +118,7 @@ def run_case(sample, target_text, pane_width=80):
             )
 
             deadline = time.monotonic() + 5
-            while "FOOTER" not in tmux("capture-pane", "-p", "-t", pane):
+            while ready_text not in tmux("capture-pane", "-p", "-t", pane):
                 if time.monotonic() > deadline:
                     raise AssertionError("fixture did not finish")
 
@@ -123,6 +140,11 @@ def run_case(sample, target_text, pane_width=80):
                     raise AssertionError("tmux client did not attach")
                 time.sleep(0.03)
 
+            if start_at_line_start:
+                tmux("copy-mode", "-t", pane)
+                tmux("send-keys", "-t", pane, "-X", "history-top")
+                tmux("send-keys", "-t", pane, "-X", "start-of-line")
+
             capture = tmux("capture-pane", "-p", "-t", pane) + "\n"
             lines = capture.splitlines()
             target_row = next(
@@ -134,11 +156,16 @@ def run_case(sample, target_text, pane_width=80):
                 sum(len(line) + 1 for line in lines[:target_row])
                 + target_character_col
             )
+            cursor_position_format = (
+                "#{copy_cursor_y}:#{copy_cursor_x}"
+                if start_at_line_start
+                else "#{cursor_y}:#{cursor_x}"
+            )
             cursor_row, cursor_col = map(
                 int,
                 tmux(
                     "display-message", "-p", "-t", pane,
-                    "#{cursor_y}:#{cursor_x}",
+                    cursor_position_format,
                 ).split(":"),
             )
             cursor_position = EASY_MOTION.convert_row_col_to_text_pos(
@@ -151,7 +178,10 @@ def run_case(sample, target_text, pane_width=80):
             label = find_target_label(grouped_indices, target_position)
             assert label, f"target {target_text!r} did not receive a hint"
 
-            os.write(master, bytes([6]) + b"w")
+            if start_at_line_start:
+                os.write(master, b"w")
+            else:
+                os.write(master, bytes([6]) + b"w")
             deadline = time.monotonic() + 5
             while tmux("display-message", "-p", "#{pane_id}") == pane:
                 if time.monotonic() > deadline:
@@ -162,11 +192,21 @@ def run_case(sample, target_text, pane_width=80):
                 os.write(master, key.encode())
                 time.sleep(0.05)
 
+            observed_positions = []
             deadline = time.monotonic() + 5
-            while (
-                tmux("display-message", "-p", "#{pane_id}") != pane
-                or len(tmux("list-windows").splitlines()) != 1
-            ):
+            while True:
+                if tmux("display-message", "-p", "#{pane_id}") == pane:
+                    observed_positions.append(
+                        tmux(
+                            "display-message", "-p", "-t", pane,
+                            "#{copy_cursor_y}:#{copy_cursor_x}",
+                        )
+                    )
+                if (
+                    tmux("display-message", "-p", "#{pane_id}") == pane
+                    and len(tmux("list-windows").splitlines()) == 1
+                ):
+                    break
                 if time.monotonic() > deadline:
                     raise AssertionError("original pane was not restored")
                 drain_client()
@@ -182,6 +222,19 @@ def run_case(sample, target_text, pane_width=80):
                 f"wrong cursor for {target_text!r} in {sample!r}: "
                 f"expected={expected_position}, actual={actual_position}"
             )
+            if assert_direct:
+                initial_position = "{}:{}".format(cursor_row, cursor_col)
+                intermediate_positions = sorted(
+                    {
+                        position
+                        for position in observed_positions
+                        if position not in (initial_position, expected_position)
+                    }
+                )
+                assert not intermediate_positions, (
+                    "cursor moved through intermediate positions instead of jumping directly: "
+                    f"{intermediate_positions[:10]}"
+                )
         finally:
             subprocess.run(
                 ["tmux", "-S", socket, "kill-server"], env=env,
@@ -202,6 +255,25 @@ def main():
     run_case("中文，单词。测试", "单")
     run_case("中文 target next", "target")
     run_case("prefix-1234567890 中文 target next tail", "target", pane_width=20)
+    run_case(
+        "alpha target " + "wideword filler " * 9 + "cursor_end",
+        "target",
+        pane_width=200,
+        assert_direct=True,
+    )
+    run_case(
+        "alpha target " + "中文 filler " * 9 + "cursor_end",
+        "target",
+        pane_width=200,
+        assert_direct=True,
+    )
+    run_case(
+        "cursor_start " + "中文 filler " * 9 + "target end",
+        "target",
+        pane_width=200,
+        assert_direct=True,
+        start_at_line_start=True,
+    )
     print("PASS: word jumps land correctly after wide Unicode characters")
 
 

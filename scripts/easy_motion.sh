@@ -83,7 +83,7 @@ easy_motion_toggle_pane() {
 
 easy_motion() {
     local server_pid session_id window_id pane_id motion motion_argument
-    local ready_command jump_command jump_cursor_position
+    local ready_command jump_command jump_cursor_position jump_horizontal_moves
     local target_key_pipe_tmp_directory
 
     server_pid="$1"
@@ -130,10 +130,11 @@ easy_motion() {
         read -r jump_command && \
         [[ "$(awk '{ print $1 }' <<< "${jump_command}")" == "jump" ]] || return
         jump_cursor_position="$(awk '{ print $2 }' <<< "${jump_command}")" && \
+        jump_horizontal_moves="$(awk '{ print $3 }' <<< "${jump_command}")" && \
         if [[ "${ready_command}" != "single-target" ]]; then
             easy_motion_toggle_pane || return
         fi
-        set_cursor_position "${pane_id}" "${jump_cursor_position}"
+        set_cursor_position "${pane_id}" "${jump_cursor_position}" "${jump_horizontal_moves}"
 
         if (( EASY_MOTION_AUTO_BEGIN_SELECTION )); then
             tmux if -F "#{?selection_present,0,1}" "send-keys -t ${pane_id} -X begin-selection"
