@@ -471,6 +471,11 @@ def character_display_width(character):
     return 2 if unicodedata.east_asian_width(character) in ("F", "W") else 1
 
 
+def text_display_width(text):
+    # type: (str) -> int
+    return sum(character_display_width(character) for character in text)
+
+
 def display_col_to_text_col(line, display_col):
     # type: (str, int) -> int
     current_display_col = 0
@@ -698,33 +703,49 @@ def print_text_with_targets(
     # target type: direct < group < preview
     jump_targets = sorted(generate_jump_targets(grouped_indices, target_keys), key=lambda x: (x[1], x[0]))
     out_buffer_parts = []  # type: List[str]
-    previous_text_pos = -1
+    next_text_pos = 0
     for target_type, text_pos, target_key in jump_targets:
-        append_to_buffer = False
-        append_extra_newline = False
-        if capture_buffer[text_pos] != "\n":
-            append_to_buffer = True
-        else:
-            # The (preview) target will be printed in an extra column at the line ending
-            # -> Check if there is one additional column available, otherwise skip this preview
-            append_extra_newline = True
-            previous_newline_index = capture_buffer.rfind("\n", text_pos - terminal_width - 1, text_pos)
-            if previous_newline_index > text_pos - terminal_width - 1:
-                append_to_buffer = True
-        if append_to_buffer:
-            if text_pos > previous_text_pos + 1:
+        # Keep only the first target for a text position. Processing the same
+        # newline twice would add an extra terminal row.
+        if text_pos < next_text_pos:
+            continue
+        if text_pos > next_text_pos:
+            out_buffer_parts.extend(
+                [dim_style_code, capture_buffer[next_text_pos:text_pos], TerminalCodes.Style.RESET]
+            )
+        target_character = capture_buffer[text_pos]
+        target_key_width = text_display_width(target_key)
+        if target_character == "\n":
+            # A newline preview occupies otherwise unused space at the end of
+            # the current terminal row. Count display cells rather than Python
+            # characters so full-width text cannot overflow and scroll the
+            # hint pane.
+            line_start = capture_buffer.rfind("\n", 0, text_pos) + 1
+            line_width = text_display_width(capture_buffer[line_start:text_pos])
+            if target_key_width > 0 and line_width + target_key_width <= terminal_width:
                 out_buffer_parts.extend(
-                    [dim_style_code, capture_buffer[previous_text_pos + 1 : text_pos], TerminalCodes.Style.RESET]
+                    [target_type_to_color[target_type], target_key, TerminalCodes.Style.RESET]
                 )
-            if text_pos > previous_text_pos:
-                # Skip targets if they share the same text position, otherwise the text would be shifted on screen. The
-                # first target on a text position should always be prefered due to the sorting order of target types
-                # (see comment in line 651)
-                out_buffer_parts.extend([target_type_to_color[target_type], target_key, TerminalCodes.Style.RESET])
-        if append_extra_newline:
             out_buffer_parts.append("\n")
-        previous_text_pos = text_pos
-    rest_of_capture_buffer = capture_buffer[previous_text_pos + 1 :].rstrip()
+        else:
+            # Replacing a wide character with a one-cell hint must leave
+            # padding behind, otherwise all following hints shift left.
+            target_width = character_display_width(target_character)
+            if target_key_width > 0 and target_key_width <= target_width:
+                out_buffer_parts.extend(
+                    [
+                        target_type_to_color[target_type],
+                        target_key,
+                        TerminalCodes.Style.RESET,
+                        " " * (target_width - target_key_width),
+                    ]
+                )
+            else:
+                out_buffer_parts.extend(
+                    [dim_style_code, target_character, TerminalCodes.Style.RESET]
+                )
+        next_text_pos = text_pos + 1
+    rest_of_capture_buffer = capture_buffer[next_text_pos:].rstrip()
     if rest_of_capture_buffer:
         out_buffer_parts.extend([dim_style_code, rest_of_capture_buffer, TerminalCodes.Style.RESET])
     sys.stdout.write(TerminalCodes.CLEAR_SCREEN)
